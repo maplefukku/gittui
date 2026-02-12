@@ -1,0 +1,31 @@
+# gittui default theme
+
+[colors]
+background = "black"
+foreground = "white"
+border_focused = "cyan"
+border_unfocused = "dark_gray"
+
+# Status colors
+added = "green"
+modified = "yellow"
+deleted = "red"
+renamed = "blue"
+untracked = "gray"
+conflicted = "magenta"
+
+# Diff colors
+diff_addition = "green"
+diff_deletion = "red"
+diff_context = "white"
+diff_hunk_header = "cyan"
+
+# Graph colors
+graph_commit = "yellow"
+graph_merge = "magenta"
+graph_line = "dark_gray"
+
+# Branch colors
+branch_current = "green"
+branch_remote = "magenta"
+branch_tag = "magenta"
