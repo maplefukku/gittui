@@ -48,21 +48,54 @@ A VS Code Git Sidebar experience in your terminal, built with Rust.
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
 ```bash
-# From source
+brew tap maplefukku/tap
+brew install gittui
+```
+
+### npm
+
+```bash
+npm install -g gittui
+```
+
+### Cargo (crates.io)
+
+```bash
+cargo install gittui
+```
+
+### Shell script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maplefukku/gittui/main/install.sh | bash
+```
+
+### From source
+
+```bash
 git clone https://github.com/maplefukku/gittui.git
 cd gittui
 cargo install --path .
-
-# Or build directly
-cargo build --release
-# Binary at: target/release/gittui
 ```
+
+### Pre-built binaries
+
+Download from [GitHub Releases](https://github.com/maplefukku/gittui/releases).
+
+| Platform | Target |
+|----------|--------|
+| macOS (Apple Silicon) | `aarch64-apple-darwin` |
+| macOS (Intel) | `x86_64-apple-darwin` |
+| Linux (x86_64) | `x86_64-unknown-linux-gnu` |
+| Linux (x86_64, static) | `x86_64-unknown-linux-musl` |
+| Linux (ARM64) | `aarch64-unknown-linux-gnu` |
+| Windows (x86_64) | `x86_64-pc-windows-msvc` |
 
 ### Requirements
 
-- Rust 1.70+
-- libgit2 (bundled via `git2` crate)
 - A terminal with 256-color and mouse support
 
 ## Usage

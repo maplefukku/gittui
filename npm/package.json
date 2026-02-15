@@ -1,0 +1,39 @@
+{
+  "name": "gittui",
+  "version": "0.1.0",
+  "description": "A VS Code-like Git TUI tool built in Rust",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maplefukku/gittui.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "gittui": "bin/gittui"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js"
+  ],
+  "keywords": [
+    "git",
+    "tui",
+    "terminal",
+    "cli",
+    "vscode"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=14"
+  }
+}
