@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "A VS Code-like Git TUI tool built in Rust"
 license = "MIT"
+repository = "https://github.com/maplefukku/gittui"
+homepage = "https://github.com/maplefukku/gittui"
+readme = "README.md"
+keywords = ["git", "tui", "terminal", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = { version = "0.28", features = ["all-widgets"] }

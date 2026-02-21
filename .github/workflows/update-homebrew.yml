@@ -1,0 +1,63 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get release version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download checksums
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern "checksums-sha256.txt" --dir /tmp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          SHA_AARCH64_DARWIN=$(grep 'aarch64-apple-darwin' /tmp/checksums-sha256.txt | awk '{print $1}')
+          SHA_X86_64_DARWIN=$(grep 'x86_64-apple-darwin' /tmp/checksums-sha256.txt | awk '{print $1}')
+          SHA_AARCH64_LINUX=$(grep 'aarch64-unknown-linux-gnu' /tmp/checksums-sha256.txt | awk '{print $1}')
+          SHA_X86_64_LINUX=$(grep 'x86_64-unknown-linux-gnu' /tmp/checksums-sha256.txt | awk '{print $1}')
+
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" Formula/gittui.rb
+
+          # Update SHA256 values in order of appearance
+          python3 -c "
+          import re
+          with open('Formula/gittui.rb', 'r') as f:
+              content = f.read()
+
+          shas = {
+              'aarch64-apple-darwin': '${SHA_AARCH64_DARWIN}',
+              'x86_64-apple-darwin': '${SHA_X86_64_DARWIN}',
+              'aarch64-unknown-linux-gnu': '${SHA_AARCH64_LINUX}',
+              'x86_64-unknown-linux-gnu': '${SHA_X86_64_LINUX}',
+          }
+
+          for target, sha in shas.items():
+              pattern = rf'(url.*{re.escape(target)}.*\n\s+sha256 \")([a-fA-F0-9]+|PLACEHOLDER)(\")'
+              content = re.sub(pattern, rf'\g<1>{sha}\3', content)
+
+          with open('Formula/gittui.rb', 'w') as f:
+              f.write(content)
+          "
+
+          cat Formula/gittui.rb
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/gittui.rb
+          git commit -m "formula: update to v${{ steps.version.outputs.version }}"
+          git push
