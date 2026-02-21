@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{App, PanelFocus};
 
 /// Render the branch list panel.
-pub fn draw_branches(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_branches(f: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == PanelFocus::Branches;
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -33,15 +33,10 @@ pub fn draw_branches(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let selected_idx = app.branch_list_state.selected();
-
     let items: Vec<ListItem> = app
         .branches
         .iter()
-        .enumerate()
-        .map(|(i, branch)| {
-            let is_selected = Some(i) == selected_idx && focused;
-
+        .map(|branch| {
             // Prefix: bullet for current branch, whitespace otherwise.
             let prefix = if branch.is_current { "\u{25cf} " } else { "  " };
 
@@ -85,18 +80,16 @@ pub fn draw_branches(f: &mut Frame, area: Rect, app: &App) {
             ];
             spans.extend(tracking);
 
-            let mut item = ListItem::new(Line::from(spans));
-            if is_selected {
-                item = item.style(
-                    Style::default()
-                        .bg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                );
-            }
-            item
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
-    let list = List::new(items).block(block);
-    f.render_widget(list, area);
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+    f.render_stateful_widget(list, area, &mut app.branch_list_state);
 }

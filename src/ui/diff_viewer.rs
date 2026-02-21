@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, PanelFocus};
+use crate::app::{App, DiffMode, PanelFocus};
 use crate::git::{DiffLineType, FileDiff};
 
 /// Render the diff viewer panel with syntax-highlighted diff output.
@@ -50,27 +50,34 @@ pub fn draw_diff_viewer(f: &mut Frame, area: Rect, app: &App) {
                 return;
             }
 
-            let lines = build_diff_lines(diff);
-            let total_lines = lines.len();
-            let visible_height = inner.height as usize;
+            match app.diff_mode {
+                DiffMode::Unified => {
+                    let lines = build_diff_lines(diff);
+                    let total_lines = lines.len();
+                    let visible_height = inner.height as usize;
 
-            // Clamp scroll offset.
-            let scroll = (app.diff_scroll as usize).min(total_lines.saturating_sub(visible_height));
+                    // Clamp scroll offset.
+                    let scroll = (app.diff_scroll as usize).min(total_lines.saturating_sub(visible_height));
 
-            let paragraph = Paragraph::new(lines)
-                .block(block)
-                .scroll((scroll as u16, 0));
-            f.render_widget(paragraph, area);
+                    let paragraph = Paragraph::new(lines)
+                        .block(block)
+                        .scroll((scroll as u16, 0));
+                    f.render_widget(paragraph, area);
 
-            // -- Scrollbar --------------------------------------------------
-            if total_lines > visible_height {
-                let mut scrollbar_state =
-                    ScrollbarState::new(total_lines.saturating_sub(visible_height))
-                        .position(scroll);
-                let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .begin_symbol(Some("\u{25b2}"))
-                    .end_symbol(Some("\u{25bc}"));
-                f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+                    // -- Scrollbar --------------------------------------------------
+                    if total_lines > visible_height {
+                        let mut scrollbar_state =
+                            ScrollbarState::new(total_lines.saturating_sub(visible_height))
+                                .position(scroll);
+                        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                            .begin_symbol(Some("\u{25b2}"))
+                            .end_symbol(Some("\u{25bc}"));
+                        f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+                    }
+                }
+                DiffMode::SideBySide => {
+                    draw_side_by_side(f, area, block, inner, diff, app.diff_scroll);
+                }
             }
         }
     }
@@ -296,4 +303,112 @@ fn word_diff_spans(
     }
 
     spans
+}
+
+/// Render a side-by-side diff view.
+fn draw_side_by_side(
+    f: &mut Frame,
+    area: Rect,
+    block: Block<'_>,
+    inner: Rect,
+    diff: &FileDiff,
+    scroll: u16,
+) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+
+    f.render_widget(block, area);
+
+    if inner.width < 4 || inner.height == 0 {
+        return;
+    }
+
+    // Split inner area into left and right halves
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(inner);
+
+    let left_area = halves[0];
+    let right_area = halves[1];
+
+    // Build paired lines: (old_line, new_line)
+    let mut left_lines: Vec<Line<'static>> = Vec::new();
+    let mut right_lines: Vec<Line<'static>> = Vec::new();
+
+    let del_style = Style::default().fg(Color::Red);
+    let add_style = Style::default().fg(Color::Green);
+    let ctx_style = Style::default().fg(Color::White);
+    let hunk_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+    for hunk in &diff.hunks {
+        // Hunk header on both sides
+        left_lines.push(Line::from(Span::styled(hunk.header.clone(), hunk_style)));
+        right_lines.push(Line::from(Span::styled(hunk.header.clone(), hunk_style)));
+
+        let mut i = 0;
+        let lines = &hunk.lines;
+        while i < lines.len() {
+            match lines[i].line_type {
+                DiffLineType::Context => {
+                    let content = lines[i].content.clone();
+                    left_lines.push(Line::from(Span::styled(format!(" {content}"), ctx_style)));
+                    right_lines.push(Line::from(Span::styled(format!(" {content}"), ctx_style)));
+                    i += 1;
+                }
+                DiffLineType::Deletion => {
+                    // Collect consecutive deletions
+                    let del_start = i;
+                    while i < lines.len() && lines[i].line_type == DiffLineType::Deletion {
+                        i += 1;
+                    }
+                    // Collect consecutive additions
+                    let add_start = i;
+                    while i < lines.len() && lines[i].line_type == DiffLineType::Addition {
+                        i += 1;
+                    }
+                    let del_count = add_start - del_start;
+                    let add_count = i - add_start;
+                    let max = del_count.max(add_count);
+
+                    for j in 0..max {
+                        if j < del_count {
+                            let content = &lines[del_start + j].content;
+                            left_lines.push(Line::from(Span::styled(format!("-{content}"), del_style)));
+                        } else {
+                            left_lines.push(Line::from(""));
+                        }
+                        if j < add_count {
+                            let content = &lines[add_start + j].content;
+                            right_lines.push(Line::from(Span::styled(format!("+{content}"), add_style)));
+                        } else {
+                            right_lines.push(Line::from(""));
+                        }
+                    }
+                }
+                DiffLineType::Addition => {
+                    // Standalone addition (not paired with deletion)
+                    let content = lines[i].content.clone();
+                    left_lines.push(Line::from(""));
+                    right_lines.push(Line::from(Span::styled(format!("+{content}"), add_style)));
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    let total = left_lines.len();
+    let visible = inner.height as usize;
+    let scroll_offset = (scroll as usize).min(total.saturating_sub(visible));
+
+    let left_para = Paragraph::new(left_lines).scroll((scroll_offset as u16, 0));
+    let right_para = Paragraph::new(right_lines).scroll((scroll_offset as u16, 0));
+
+    f.render_widget(left_para, left_area);
+    f.render_widget(right_para, right_area);
 }

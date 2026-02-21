@@ -10,7 +10,7 @@ use crate::app::{App, PanelFocus};
 use crate::git::{FileStatus, StatusType};
 
 /// Render the unstaged / untracked changes panel.
-pub fn draw_changes(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_changes(f: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == PanelFocus::Changes;
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -35,8 +35,6 @@ pub fn draw_changes(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let selected_idx = app.changes_list_state.selected();
-
     // Build a combined list of unstaged + untracked files.
     let combined: Vec<&FileStatus> = app
         .unstaged
@@ -46,10 +44,7 @@ pub fn draw_changes(f: &mut Frame, area: Rect, app: &App) {
 
     let items: Vec<ListItem> = combined
         .iter()
-        .enumerate()
-        .map(|(i, file)| {
-            let is_selected = Some(i) == selected_idx && focused;
-
+        .map(|file| {
             let (prefix, color) = match file.status {
                 StatusType::Modified => ("M", Color::Yellow),
                 StatusType::New | StatusType::Added => ("A", Color::Green),
@@ -69,18 +64,16 @@ pub fn draw_changes(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(file.path.as_str(), Style::default().fg(color)),
             ]);
 
-            let mut item = ListItem::new(line);
-            if is_selected {
-                item = item.style(
-                    Style::default()
-                        .bg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                );
-            }
-            item
+            ListItem::new(line)
         })
         .collect();
 
-    let list = List::new(items).block(block);
-    f.render_widget(list, area);
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+    f.render_stateful_widget(list, area, &mut app.changes_list_state);
 }

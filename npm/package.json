@@ -1,6 +1,6 @@
 {
   "name": "@maplefukku/gittui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A VS Code-like Git TUI tool built in Rust",
   "repository": {
     "type": "git",

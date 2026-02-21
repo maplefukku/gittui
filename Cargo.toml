@@ -1,6 +1,6 @@
 [package]
 name = "gittui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A VS Code-like Git TUI tool built in Rust"
 license = "MIT"
@@ -26,6 +26,9 @@ anyhow = "1"
 fuzzy-matcher = "0.3"
 notify = "6"
 textwrap = "0.16"
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

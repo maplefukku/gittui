@@ -22,12 +22,13 @@ pub enum AppEvent {
     AsyncResult(AsyncResult),
 }
 
-/// Outcomes from background git operations (fetch / push / pull).
+/// Outcomes from background git operations (fetch / push / pull / AI).
 #[derive(Debug)]
 pub enum AsyncResult {
     FetchComplete(Result<String>),
     PushComplete(Result<String>),
     PullComplete(Result<String>),
+    AiCommitMessage(Result<String>),
 }
 
 // ---------------------------------------------------------------------------
@@ -39,29 +40,51 @@ pub enum AsyncResult {
 /// The handler uses a configurable tick rate (default 250 ms).  If no
 /// terminal event arrives within the tick interval a `Tick` event is
 /// produced instead so the main loop can perform periodic housekeeping.
+///
+/// Also includes a channel for receiving results from background threads.
 pub struct EventHandler {
     /// How long to wait before emitting a Tick when no real event arrives.
     tick_rate: Duration,
+    async_rx: std::sync::mpsc::Receiver<AsyncResult>,
+    async_tx: std::sync::mpsc::Sender<AsyncResult>,
 }
 
 impl EventHandler {
     /// Create a new handler with the default 250 ms tick rate.
     pub fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
         Self {
             tick_rate: Duration::from_millis(250),
+            async_rx: rx,
+            async_tx: tx,
         }
     }
 
     /// Create a handler with a custom tick rate.
     pub fn with_tick_rate(tick_rate: Duration) -> Self {
-        Self { tick_rate }
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self {
+            tick_rate,
+            async_rx: rx,
+            async_tx: tx,
+        }
+    }
+
+    /// Get a sender for async results.
+    pub fn async_sender(&self) -> std::sync::mpsc::Sender<AsyncResult> {
+        self.async_tx.clone()
     }
 
     /// Block until the next event is available.
     ///
     /// Returns `AppEvent::Tick` if no terminal event arrives within the
-    /// configured tick rate.
+    /// configured tick rate. Checks for async results (non-blocking) first.
     pub fn next(&self) -> Result<AppEvent> {
+        // Check for async results first (non-blocking)
+        if let Ok(result) = self.async_rx.try_recv() {
+            return Ok(AppEvent::AsyncResult(result));
+        }
+
         if event::poll(self.tick_rate)? {
             let ev = event::read()?;
             match ev {

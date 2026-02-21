@@ -15,6 +15,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub diff: DiffConfig,
     pub log: LogConfig,
+    pub ai: AiConfig,
 }
 
 /// General settings.
@@ -59,6 +60,25 @@ pub struct LogConfig {
     pub show_remote_branches: bool,
     /// Maximum number of commits to load.
     pub max_count: usize,
+}
+
+/// AI assistant settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiConfig {
+    /// Whether AI features are enabled.
+    pub enabled: bool,
+    /// Model to use (passed as ANTHROPIC_MODEL env var).
+    pub model: String,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: String::from("haiku"),
+        }
+    }
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────

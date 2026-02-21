@@ -10,7 +10,7 @@ use crate::app::{App, PanelFocus};
 use crate::git::StatusType;
 
 /// Render the staged files panel.
-pub fn draw_staged(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_staged(f: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == PanelFocus::Staged;
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -34,15 +34,10 @@ pub fn draw_staged(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let selected_idx = app.staged_list_state.selected();
-
     let items: Vec<ListItem> = app
         .staged
         .iter()
-        .enumerate()
-        .map(|(i, file)| {
-            let is_selected = Some(i) == selected_idx && focused;
-
+        .map(|file| {
             let color = match file.status {
                 StatusType::New | StatusType::Added => Color::Green,
                 StatusType::Modified => Color::Yellow,
@@ -59,18 +54,16 @@ pub fn draw_staged(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(&file.path, Style::default().fg(color)),
             ]);
 
-            let mut item = ListItem::new(line);
-            if is_selected {
-                item = item.style(
-                    Style::default()
-                        .bg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                );
-            }
-            item
+            ListItem::new(line)
         })
         .collect();
 
-    let list = List::new(items).block(block);
-    f.render_widget(list, area);
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+    f.render_stateful_widget(list, area, &mut app.staged_list_state);
 }

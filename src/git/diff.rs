@@ -353,3 +353,99 @@ pub fn diff_commits(
 
     collect_file_diffs(&diff)
 }
+
+// ---------------------------------------------------------------------------
+// Hunk patch generation and application
+// ---------------------------------------------------------------------------
+
+/// Generate a patch string for a single hunk of a file diff.
+pub fn generate_hunk_patch(diff: &FileDiff, hunk_index: usize) -> Option<String> {
+    let hunk = diff.hunks.get(hunk_index)?;
+    let mut patch = String::new();
+
+    // Minimal diff header
+    patch.push_str(&format!("--- a/{}\n", diff.old_path.as_deref().unwrap_or(&diff.path)));
+    patch.push_str(&format!("+++ b/{}\n", diff.path));
+    patch.push_str(&format!("{}\n", hunk.header));
+
+    for line in &hunk.lines {
+        match line.line_type {
+            DiffLineType::Addition => {
+                patch.push('+');
+                patch.push_str(&line.content);
+                if !line.content.ends_with('\n') {
+                    patch.push('\n');
+                }
+            }
+            DiffLineType::Deletion => {
+                patch.push('-');
+                patch.push_str(&line.content);
+                if !line.content.ends_with('\n') {
+                    patch.push('\n');
+                }
+            }
+            DiffLineType::Context => {
+                patch.push(' ');
+                patch.push_str(&line.content);
+                if !line.content.ends_with('\n') {
+                    patch.push('\n');
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(patch)
+}
+
+/// Stage a single hunk by applying a patch to the index.
+pub fn stage_hunk(repo_path: &std::path::Path, patch: &str) -> Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("git")
+        .args(["apply", "--cached", "--unidiff-zero"])
+        .current_dir(repo_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn git apply")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(patch.as_bytes()).context("failed to write patch to stdin")?;
+    }
+
+    let output = child.wait_with_output().context("failed to wait for git apply")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git apply --cached failed: {stderr}");
+    }
+
+    Ok(())
+}
+
+/// Discard a single hunk by reverse-applying a patch.
+pub fn discard_hunk(repo_path: &std::path::Path, patch: &str) -> Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("git")
+        .args(["apply", "--reverse"])
+        .current_dir(repo_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn git apply --reverse")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(patch.as_bytes()).context("failed to write patch to stdin")?;
+    }
+
+    let output = child.wait_with_output().context("failed to wait for git apply --reverse")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git apply --reverse failed: {stderr}");
+    }
+
+    Ok(())
+}

@@ -94,10 +94,23 @@ pub fn draw_commit(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::Yellow)
     };
 
+    let ai_btn_style = if app.ai_generating {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Magenta)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Magenta)
+    };
+
+    let ai_label = if app.ai_generating { " [AI ...] " } else { " [AI] " };
+
     let buttons = Line::from(vec![
         Span::styled(" [Commit] ", commit_btn_style),
         Span::raw(" "),
         Span::styled(" [Amend] ", amend_btn_style),
+        Span::raw(" "),
+        Span::styled(ai_label, ai_btn_style),
     ]);
 
     let buttons_paragraph = Paragraph::new(buttons);

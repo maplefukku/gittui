@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{App, PanelFocus};
 
 /// Render the stash list panel.
-pub fn draw_stash(f: &mut Frame, area: Rect, app: &App) {
+pub fn draw_stash(f: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == PanelFocus::Stash;
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -33,15 +33,10 @@ pub fn draw_stash(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let selected_idx = app.stash_list_state.selected();
-
     let items: Vec<ListItem> = app
         .stashes
         .iter()
-        .enumerate()
-        .map(|(i, stash)| {
-            let is_selected = Some(i) == selected_idx && focused;
-
+        .map(|stash| {
             let line = Line::from(vec![
                 Span::styled(
                     format!("stash@{{{}}} ", stash.index),
@@ -50,18 +45,16 @@ pub fn draw_stash(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(&stash.message, Style::default().fg(Color::White)),
             ]);
 
-            let mut item = ListItem::new(line);
-            if is_selected {
-                item = item.style(
-                    Style::default()
-                        .bg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                );
-            }
-            item
+            ListItem::new(line)
         })
         .collect();
 
-    let list = List::new(items).block(block);
-    f.render_widget(list, area);
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+    f.render_stateful_widget(list, area, &mut app.stash_list_state);
 }

@@ -50,7 +50,7 @@ impl PanelFocus {
     }
 
     /// Normalize aliases.
-    fn canonical(self) -> Self {
+    pub fn canonical(self) -> Self {
         match self {
             PanelFocus::Commit => PanelFocus::CommitMessage,
             other => other,
@@ -94,6 +94,7 @@ pub enum InputMode {
     CommandPalette,
     DialogInput,
     SearchInput,
+    ContextMenu,
 }
 
 impl InputMode {
@@ -241,6 +242,18 @@ pub enum DialogAction {
 }
 
 // ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+/// A search result pointing to a specific panel and item.
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub panel: PanelFocus,
+    pub index: usize,
+    pub text: String,
+}
+
+// ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 
@@ -269,7 +282,7 @@ pub struct App {
     pub stash_list_state: ListState,
     pub log_list_state: ListState,
     pub diff_scroll: u16,
-    pub log_scroll: u16,
+    pub log_viewport_offset: usize,
 
     // ── Diff ───────────────────────────────────────────────────────────
     pub current_diff: Option<FileDiff>,
@@ -310,6 +323,18 @@ pub struct App {
     // ── Async operation ────────────────────────────────────────────────
     pub async_status: Option<String>,
     pub async_op: Option<AsyncOp>,
+
+    // ── Search ────────────────────────────────────────────────────────
+    pub search_query: String,
+    pub search_results: Vec<SearchResult>,
+    pub search_result_index: usize,
+
+    // ── AI ────────────────────────────────────────────────────────────
+    pub ai_generating: bool,
+    pub ai_requested: bool,
+
+    // ── Async sender ──────────────────────────────────────────────────
+    pub async_tx: Option<std::sync::mpsc::Sender<crate::event::AsyncResult>>,
 }
 
 impl App {
@@ -345,7 +370,7 @@ impl App {
             stash_list_state: ListState::default(),
             log_list_state: ListState::default(),
             diff_scroll: 0,
-            log_scroll: 0,
+            log_viewport_offset: 0,
 
             current_diff: None,
             diff_mode: DiffMode::Unified,
@@ -376,6 +401,15 @@ impl App {
 
             async_status: None,
             async_op: None,
+
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_result_index: 0,
+
+            ai_generating: false,
+            ai_requested: false,
+
+            async_tx: None,
         };
 
         app.refresh()?;
@@ -415,6 +449,19 @@ impl App {
     /// Current selection index in the log panel.
     pub fn log_index(&self) -> usize {
         self.log_list_state.selected().unwrap_or(0)
+    }
+
+    /// Ensure the selected log entry is visible within the viewport.
+    pub fn ensure_log_visible(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        let selected = self.log_list_state.selected().unwrap_or(0);
+        if selected < self.log_viewport_offset {
+            self.log_viewport_offset = selected;
+        } else if selected >= self.log_viewport_offset + visible_height {
+            self.log_viewport_offset = selected + 1 - visible_height;
+        }
     }
 
     /// Whether the working tree is clean (nothing staged, unstaged, or untracked).
@@ -783,6 +830,24 @@ impl App {
         Ok(())
     }
 
+    /// Stage all changed files.
+    pub fn stage_all(&mut self) -> Result<()> {
+        let repo = self.open_repo()?;
+        git::status::stage_all(&repo)?;
+        self.refresh_status()?;
+        self.notify("All files staged".to_string(), NotificationType::Success);
+        Ok(())
+    }
+
+    /// Unstage all staged files.
+    pub fn unstage_all(&mut self) -> Result<()> {
+        let repo = self.open_repo()?;
+        git::status::unstage_all(&repo)?;
+        self.refresh_status()?;
+        self.notify("All files unstaged".to_string(), NotificationType::Success);
+        Ok(())
+    }
+
     /// Discard changes for the currently selected file (with confirmation dialog).
     pub fn discard_selected(&mut self) -> Result<()> {
         if self.focus != PanelFocus::Changes {
@@ -1105,6 +1170,98 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    // ── Context menu ──────────────────────────────────────────────────
+
+    /// Execute the currently selected context menu action.
+    pub fn execute_context_menu_action(&mut self) -> Result<()> {
+        if let Some(menu) = self.context_menu.take() {
+            if let Some(item) = menu.items.get(menu.selected) {
+                let action = item.label.clone();
+                self.input_mode = InputMode::Normal;
+
+                match action.as_str() {
+                    "Stage" => { self.stage_selected()?; }
+                    "Unstage" => { self.unstage_selected()?; }
+                    "Discard" => { self.discard_selected()?; }
+                    "Stage All" => { self.stage_all()?; }
+                    "Unstage All" => { self.unstage_all()?; }
+                    "Checkout" => { self.checkout_selected_branch()?; }
+                    "Delete" => { self.delete_selected_branch()?; }
+                    "Create" => { self.create_branch()?; }
+                    "Rename" => {
+                        if let Some(idx) = self.branch_list_state.selected() {
+                            if let Some(branch) = self.branches.get(idx) {
+                                let name = branch.name.clone();
+                                self.dialog = Some(Dialog {
+                                    title: "Rename Branch".to_string(),
+                                    message: format!("Rename '{}' to:", name),
+                                    dialog_type: DialogType::Input {
+                                        on_submit: DialogAction::RenameBranch(name),
+                                    },
+                                    input: String::new(),
+                                    selected: 0,
+                                });
+                                self.input_mode = InputMode::DialogInput;
+                            }
+                        }
+                    }
+                    "Pop" => { self.stash_pop()?; }
+                    "Apply" => { self.stash_pop()?; }
+                    "Drop" => { self.stash_drop_selected()?; }
+                    "Copy Path" => {
+                        let path = match self.focus {
+                            PanelFocus::Changes => {
+                                self.changes_list_state.selected()
+                                    .and_then(|i| self.change_at(i))
+                                    .map(|f| f.path.clone())
+                            }
+                            PanelFocus::Staged => {
+                                self.staged_list_state.selected()
+                                    .and_then(|i| self.staged.get(i))
+                                    .map(|f| f.path.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(p) = path {
+                            self.notify(format!("Path: {}", p), NotificationType::Info);
+                        }
+                    }
+                    "Show Diff" => {
+                        self.update_diff()?;
+                    }
+                    "Checkout Commit" => {
+                        if let Some(idx) = self.log_list_state.selected() {
+                            if let Some(commit) = self.log.get(idx) {
+                                let oid = commit.short_oid.clone();
+                                let repo = self.open_repo()?;
+                                git::branch::checkout_branch(&repo, &oid)?;
+                                self.refresh()?;
+                                self.notify(
+                                    format!("Checked out commit {}", oid),
+                                    NotificationType::Success,
+                                );
+                            }
+                        }
+                    }
+                    "Copy SHA" => {
+                        if let Some(idx) = self.log_list_state.selected() {
+                            if let Some(commit) = self.log.get(idx) {
+                                self.notify(
+                                    format!("SHA: {}", commit.oid),
+                                    NotificationType::Info,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                self.input_mode = InputMode::Normal;
+            }
+        }
+        Ok(())
+    }
+
     // ── Help ───────────────────────────────────────────────────────────
 
     /// Toggle the help overlay.
@@ -1150,6 +1307,161 @@ impl App {
             self.input_mode = InputMode::Normal;
             self.focus = PanelFocus::Changes;
         }
+    }
+
+    // ── AI commit message ──────────────────────────────────────────────
+
+    /// Set the AI-generated commit message (called when the background task completes).
+    pub fn set_ai_commit_message(&mut self, message: String) {
+        self.commit_message = message;
+        self.commit_cursor = self.commit_message.len();
+        self.ai_generating = false;
+        self.notify("AI message generated".to_string(), NotificationType::Success);
+    }
+
+    /// Handle AI generation error.
+    pub fn set_ai_error(&mut self, error: String) {
+        self.ai_generating = false;
+        self.notify(format!("AI error: {error}"), NotificationType::Error);
+    }
+
+    // ── Search ────────────────────────────────────────────────────────
+
+    /// Perform a fuzzy search across all panels.
+    pub fn perform_search(&mut self) {
+        use fuzzy_matcher::FuzzyMatcher;
+        use fuzzy_matcher::skim::SkimMatcherV2;
+
+        let matcher = SkimMatcherV2::default();
+        let query = &self.search_query;
+
+        if query.is_empty() {
+            self.search_results.clear();
+            return;
+        }
+
+        let mut results = Vec::new();
+
+        // Search branches
+        for (i, branch) in self.branches.iter().enumerate() {
+            if matcher.fuzzy_match(&branch.name, query).is_some() {
+                results.push(SearchResult {
+                    panel: PanelFocus::Branches,
+                    index: i,
+                    text: branch.name.clone(),
+                });
+            }
+        }
+
+        // Search staged files
+        for (i, file) in self.staged.iter().enumerate() {
+            if matcher.fuzzy_match(&file.path, query).is_some() {
+                results.push(SearchResult {
+                    panel: PanelFocus::Staged,
+                    index: i,
+                    text: file.path.clone(),
+                });
+            }
+        }
+
+        // Search changes (unstaged + untracked)
+        for (i, file) in self.changed_files().iter().enumerate() {
+            if matcher.fuzzy_match(&file.path, query).is_some() {
+                results.push(SearchResult {
+                    panel: PanelFocus::Changes,
+                    index: i,
+                    text: file.path.clone(),
+                });
+            }
+        }
+
+        // Search commits
+        for (i, commit) in self.log.iter().enumerate() {
+            if matcher.fuzzy_match(&commit.summary, query).is_some()
+                || matcher.fuzzy_match(&commit.short_oid, query).is_some()
+            {
+                results.push(SearchResult {
+                    panel: PanelFocus::LogGraph,
+                    index: i,
+                    text: format!("{} {}", commit.short_oid, commit.summary),
+                });
+            }
+        }
+
+        // Search stashes
+        for (i, stash) in self.stashes.iter().enumerate() {
+            if matcher.fuzzy_match(&stash.message, query).is_some() {
+                results.push(SearchResult {
+                    panel: PanelFocus::Stash,
+                    index: i,
+                    text: stash.message.clone(),
+                });
+            }
+        }
+
+        self.search_results = results;
+        self.search_result_index = 0;
+    }
+
+    /// Jump to the next search result.
+    pub fn search_next(&mut self) {
+        if self.search_results.is_empty() { return; }
+        self.search_result_index = (self.search_result_index + 1) % self.search_results.len();
+        self.jump_to_search_result();
+    }
+
+    /// Jump to the previous search result.
+    pub fn search_prev(&mut self) {
+        if self.search_results.is_empty() { return; }
+        self.search_result_index = if self.search_result_index == 0 {
+            self.search_results.len() - 1
+        } else {
+            self.search_result_index - 1
+        };
+        self.jump_to_search_result();
+    }
+
+    /// Jump to the current search result (focus panel + select item).
+    fn jump_to_search_result(&mut self) {
+        if let Some(result) = self.search_results.get(self.search_result_index) {
+            self.focus = result.panel;
+            match result.panel {
+                PanelFocus::Branches => self.branch_list_state.select(Some(result.index)),
+                PanelFocus::Staged => self.staged_list_state.select(Some(result.index)),
+                PanelFocus::Changes => self.changes_list_state.select(Some(result.index)),
+                PanelFocus::Stash => self.stash_list_state.select(Some(result.index)),
+                PanelFocus::LogGraph => self.log_list_state.select(Some(result.index)),
+                _ => {}
+            }
+        }
+    }
+
+    // ── Hunk actions ──────────────────────────────────────────────────
+
+    /// Stage a specific hunk from the current diff.
+    pub fn stage_hunk(&mut self, hunk_index: usize) -> Result<()> {
+        if let Some(ref diff) = self.current_diff {
+            if let Some(patch) = git::diff::generate_hunk_patch(diff, hunk_index) {
+                git::diff::stage_hunk(&self.repo_path, &patch)?;
+                self.refresh_status()?;
+                self.update_diff()?;
+                self.notify("Hunk staged".to_string(), NotificationType::Success);
+            }
+        }
+        Ok(())
+    }
+
+    /// Discard a specific hunk from the current diff.
+    pub fn discard_hunk(&mut self, hunk_index: usize) -> Result<()> {
+        if let Some(ref diff) = self.current_diff {
+            if let Some(patch) = git::diff::generate_hunk_patch(diff, hunk_index) {
+                git::diff::discard_hunk(&self.repo_path, &patch)?;
+                self.refresh_status()?;
+                self.update_diff()?;
+                self.notify("Hunk discarded".to_string(), NotificationType::Success);
+            }
+        }
+        Ok(())
     }
 }
 

@@ -1,10 +1,3 @@
-pub mod app;
-pub mod config;
-pub mod event;
-pub mod git;
-pub mod input;
-pub mod ui;
-
 use std::io;
 use std::path::PathBuf;
 
@@ -16,10 +9,12 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::App;
-use event::{AppEvent, EventHandler};
-use input::mouse::PanelLayout;
-use ui::layout::LayoutAreas;
+use gittui::app::App;
+use gittui::event::{AppEvent, EventHandler};
+use gittui::input;
+use gittui::input::mouse::{MouseState, PanelLayout};
+use gittui::ui;
+use gittui::ui::layout::LayoutAreas;
 
 fn main() -> Result<()> {
     // Determine the repository path: use the first CLI argument or CWD.
@@ -42,12 +37,14 @@ fn main() -> Result<()> {
 
     // Build the event handler (250 ms tick rate).
     let events = EventHandler::new();
+    app.async_tx = Some(events.async_sender());
 
     // Track panel layout for mouse hit-testing.
     let mut panel_layout = PanelLayout::default();
+    let mut mouse_state = MouseState::default();
 
     // ── Main event loop ──────────────────────────────────────────────────
-    let result = run_loop(&mut terminal, &mut app, &events, &mut panel_layout);
+    let result = run_loop(&mut terminal, &mut app, &events, &mut panel_layout, &mut mouse_state);
 
     // ── Restore the terminal ─────────────────────────────────────────────
     disable_raw_mode().context("failed to disable raw mode")?;
@@ -69,6 +66,7 @@ fn run_loop(
     app: &mut App,
     events: &EventHandler,
     panel_layout: &mut PanelLayout,
+    mouse_state: &mut MouseState,
 ) -> Result<()> {
     loop {
         // ── Render ────────────────────────────────────────────────────
@@ -99,7 +97,7 @@ fn run_loop(
                 input::handle_key_event(app, key)?;
             }
             AppEvent::Mouse(mouse) => {
-                input::handle_mouse_event(app, mouse, Some(panel_layout))?;
+                input::handle_mouse_event(app, mouse, Some(panel_layout), mouse_state)?;
             }
             AppEvent::Tick => {
                 app.tick_notification();
@@ -107,10 +105,62 @@ fn run_loop(
             AppEvent::Resize(_w, _h) => {
                 // Terminal resize is handled automatically by ratatui on next draw.
             }
-            AppEvent::AsyncResult(_result) => {
-                // Async results will be handled when we integrate tokio.
+            AppEvent::AsyncResult(result) => {
+                app.async_op = None;
                 app.async_status = None;
-                app.refresh().ok();
+                match result {
+                    gittui::event::AsyncResult::FetchComplete(Ok(msg)) => {
+                        app.refresh().ok();
+                        app.notify(msg, gittui::app::NotificationType::Success);
+                    }
+                    gittui::event::AsyncResult::FetchComplete(Err(e)) => {
+                        app.notify(format!("Fetch failed: {e}"), gittui::app::NotificationType::Error);
+                    }
+                    gittui::event::AsyncResult::PushComplete(Ok(msg)) => {
+                        app.refresh().ok();
+                        app.notify(msg, gittui::app::NotificationType::Success);
+                    }
+                    gittui::event::AsyncResult::PushComplete(Err(e)) => {
+                        app.notify(format!("Push failed: {e}"), gittui::app::NotificationType::Error);
+                    }
+                    gittui::event::AsyncResult::PullComplete(Ok(msg)) => {
+                        app.refresh().ok();
+                        app.notify(msg, gittui::app::NotificationType::Success);
+                    }
+                    gittui::event::AsyncResult::PullComplete(Err(e)) => {
+                        app.notify(format!("Pull failed: {e}"), gittui::app::NotificationType::Error);
+                    }
+                    gittui::event::AsyncResult::AiCommitMessage(Ok(msg)) => {
+                        app.set_ai_commit_message(msg);
+                    }
+                    gittui::event::AsyncResult::AiCommitMessage(Err(e)) => {
+                        app.set_ai_error(format!("{e}"));
+                    }
+                }
+            }
+        }
+
+        // ── Check if AI generation was requested ────────────────────
+        if app.ai_requested {
+            app.ai_requested = false;
+            app.ai_generating = true;
+            if let Some(tx) = app.async_tx.clone() {
+                let repo_path = app.repo_path.clone();
+                std::thread::spawn(move || {
+                    let result = (|| -> anyhow::Result<String> {
+                        let repo = gittui::git::repo::open_repo(&repo_path)?;
+                        let diff_text = gittui::git::diff::unified_diff_string(
+                            &repo,
+                            "",
+                            gittui::git::diff::DiffTarget::Staged,
+                        )?;
+                        if diff_text.is_empty() {
+                            anyhow::bail!("No staged changes to generate message for");
+                        }
+                        gittui::ai::generate_commit_message(&diff_text, "haiku")
+                    })();
+                    let _ = tx.send(gittui::event::AsyncResult::AiCommitMessage(result));
+                });
             }
         }
     }

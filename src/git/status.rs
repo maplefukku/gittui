@@ -191,14 +191,14 @@ pub fn stage_file(repo: &Repository, path: &str) -> Result<()> {
 /// For files that exist in HEAD this resets the index entry to HEAD's version.
 /// For files not in HEAD (newly added) this removes them from the index.
 pub fn unstage_file(repo: &Repository, path: &str) -> Result<()> {
-    let head_tree = repo
+    let head_obj = repo
         .head()
         .ok()
-        .and_then(|h| h.peel_to_tree().ok());
+        .and_then(|h| h.peel(git2::ObjectType::Commit).ok());
 
-    match head_tree {
-        Some(tree) => {
-            repo.reset_default(Some(&tree.into_object()), [path])
+    match head_obj {
+        Some(obj) => {
+            repo.reset_default(Some(&obj), [path])
                 .with_context(|| format!("failed to unstage {path}"))?;
         }
         None => {
@@ -221,6 +221,28 @@ pub fn stage_all(repo: &Repository) -> Result<()> {
         .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
         .context("failed to stage all files")?;
     index.write().context("failed to write index")?;
+    Ok(())
+}
+
+/// Unstage all files (equivalent to `git reset HEAD`).
+pub fn unstage_all(repo: &Repository) -> Result<()> {
+    let head_obj = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel(git2::ObjectType::Commit).ok());
+
+    match head_obj {
+        Some(obj) => {
+            repo.reset_default(Some(&obj), ["*"])
+                .context("failed to unstage all files")?;
+        }
+        None => {
+            // No HEAD yet (initial commit) — clear the index entirely.
+            let mut index = repo.index().context("failed to open index")?;
+            index.clear().context("failed to clear index")?;
+            index.write().context("failed to write index")?;
+        }
+    }
     Ok(())
 }
 

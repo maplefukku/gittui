@@ -139,7 +139,7 @@ pub fn draw_log_graph(f: &mut Frame, area: Rect, app: &App) {
 
     let total_lines = lines.len();
     let visible_height = inner.height as usize;
-    let scroll = (app.log_scroll as usize).min(total_lines.saturating_sub(visible_height));
+    let scroll = app.log_viewport_offset.min(total_lines.saturating_sub(visible_height));
 
     let paragraph = Paragraph::new(lines)
         .block(block)

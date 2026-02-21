@@ -16,6 +16,7 @@ pub mod layout;
 pub mod log_graph;
 pub mod remote;
 pub mod staged;
+pub mod search;
 pub mod stash;
 pub mod statusbar;
 
@@ -38,7 +39,7 @@ use layout::LayoutAreas;
 /// 4. Draw the status bar.
 /// 5. Draw overlays (help, command palette, dialog, context menu) -- these
 ///    are rendered last so they float on top of everything else.
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let areas = LayoutAreas::compute(f.area());
 
     // -- Header ---------------------------------------------------------
@@ -56,8 +57,13 @@ pub fn draw(f: &mut Frame, app: &App) {
     diff_viewer::draw_diff_viewer(f, areas.diff_viewer, app);
     log_graph::draw_log_graph(f, areas.log_graph, app);
 
-    // -- Status bar -----------------------------------------------------
-    statusbar::draw_statusbar(f, areas.statusbar, app);
+    // -- Search bar (when active) ----------------------------------------
+    if app.input_mode == crate::app::InputMode::SearchInput {
+        search::draw_search(f, areas.statusbar, app);
+    } else {
+        // -- Status bar -----------------------------------------------------
+        statusbar::draw_statusbar(f, areas.statusbar, app);
+    }
 
     // -- Overlays (drawn last so they are on top) -----------------------
     if app.show_help {

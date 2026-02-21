@@ -20,6 +20,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         InputMode::CommandPalette => handle_command_palette_mode(app, key),
         InputMode::DialogInput => handle_dialog_mode(app, key),
         InputMode::SearchInput => handle_search_mode(app, key),
+        InputMode::ContextMenu => handle_context_menu_mode(app, key),
     }
 }
 
@@ -91,6 +92,16 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.update_diff().ok();
             }
         }
+        KeyCode::PageDown => {
+            if app.focus == PanelFocus::DiffViewer {
+                app.diff_scroll = app.diff_scroll.saturating_add(20);
+            }
+        }
+        KeyCode::PageUp => {
+            if app.focus == PanelFocus::DiffViewer {
+                app.diff_scroll = app.diff_scroll.saturating_sub(20);
+            }
+        }
         KeyCode::Char('g') => {
             app.select_first();
         }
@@ -105,11 +116,17 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.update_diff().ok();
             }
         }
-        KeyCode::Char('u') => {
+        KeyCode::Char('u') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             if app.focus == PanelFocus::Staged {
                 app.unstage_selected()?;
                 app.update_diff().ok();
             }
+        }
+        KeyCode::Char('S') => {
+            app.stage_all()?;
+        }
+        KeyCode::Char('U') => {
+            app.unstage_all()?;
         }
 
         // ── Commit ─────────────────────────────────────────────────────
@@ -140,23 +157,76 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<()> {
             app.discard_selected()?;
         }
 
-        // ── Diff mode ──────────────────────────────────────────────────
+        // ── Diff mode / half-page scroll ────────────────────────────────
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.toggle_diff_mode();
+            if app.focus == PanelFocus::DiffViewer {
+                app.diff_scroll = app.diff_scroll.saturating_add(10);
+            } else {
+                app.toggle_diff_mode();
+            }
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.focus == PanelFocus::DiffViewer {
+                app.diff_scroll = app.diff_scroll.saturating_sub(10);
+            }
         }
 
         // ── Fetch / Push / Pull ────────────────────────────────────────
         KeyCode::Char('f') => {
-            app.async_status = Some("Fetching...".to_string());
-            app.notify("Fetch initiated (async)".to_string(), NotificationType::Info);
+            if app.async_op.is_none() {
+                app.async_op = Some(crate::app::AsyncOp::Fetching);
+                app.async_status = Some("Fetching...".to_string());
+
+                if let Some(tx) = app.async_tx.clone() {
+                    let repo_path = app.repo_path.clone();
+                    std::thread::spawn(move || {
+                        let result = (|| -> anyhow::Result<String> {
+                            let repo = crate::git::repo::open_repo(&repo_path)?;
+                            crate::git::remote::fetch(&repo, "origin")?;
+                            Ok("Fetch complete".to_string())
+                        })();
+                        let _ = tx.send(crate::event::AsyncResult::FetchComplete(result));
+                    });
+                }
+            }
         }
-        KeyCode::Char('p') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-            app.async_status = Some("Pushing...".to_string());
-            app.notify("Push initiated (async)".to_string(), NotificationType::Info);
+        KeyCode::Char('p') if !key.modifiers.contains(KeyModifiers::SHIFT) && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.async_op.is_none() {
+                app.async_op = Some(crate::app::AsyncOp::Pushing);
+                app.async_status = Some("Pushing...".to_string());
+
+                if let Some(tx) = app.async_tx.clone() {
+                    let repo_path = app.repo_path.clone();
+                    let branch = app.head.branch.clone().unwrap_or_else(|| "main".to_string());
+                    std::thread::spawn(move || {
+                        let result = (|| -> anyhow::Result<String> {
+                            let repo = crate::git::repo::open_repo(&repo_path)?;
+                            crate::git::remote::push(&repo, "origin", &branch)?;
+                            Ok("Push complete".to_string())
+                        })();
+                        let _ = tx.send(crate::event::AsyncResult::PushComplete(result));
+                    });
+                }
+            }
         }
         KeyCode::Char('P') => {
-            app.async_status = Some("Pulling...".to_string());
-            app.notify("Pull initiated (async)".to_string(), NotificationType::Info);
+            if app.async_op.is_none() {
+                app.async_op = Some(crate::app::AsyncOp::Pulling);
+                app.async_status = Some("Pulling...".to_string());
+
+                if let Some(tx) = app.async_tx.clone() {
+                    let repo_path = app.repo_path.clone();
+                    let branch = app.head.branch.clone().unwrap_or_else(|| "main".to_string());
+                    std::thread::spawn(move || {
+                        let result = (|| -> anyhow::Result<String> {
+                            let repo = crate::git::repo::open_repo(&repo_path)?;
+                            crate::git::remote::pull(&repo, "origin", &branch)?;
+                            Ok("Pull complete".to_string())
+                        })();
+                        let _ = tx.send(crate::event::AsyncResult::PullComplete(result));
+                    });
+                }
+            }
         }
 
         // ── Branches ───────────────────────────────────────────────────
@@ -229,6 +299,14 @@ fn handle_commit_edit_mode(app: &mut App, key: KeyEvent) -> Result<()> {
             app.prev_panel();
         }
 
+        // Ctrl+G -> trigger AI commit message generation
+        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if !app.ai_generating {
+                app.ai_requested = true;
+                app.notify("Generating AI commit message...".to_string(), NotificationType::Info);
+            }
+        }
+
         // All other keys go to the mini text editor.
         _ => {
             text_editor::handle_text_input(
@@ -252,14 +330,50 @@ fn handle_command_palette_mode(app: &mut App, key: KeyEvent) -> Result<()> {
             app.close_command_palette();
         }
         KeyCode::Enter => {
-            // Execute selected command (placeholder for now).
+            // Get the selected command name from the filtered list
+            let query = app.command_palette_input.clone();
+            let filtered: Vec<&crate::app::PaletteCommand> = if query.is_empty() {
+                app.palette_commands.iter().collect()
+            } else {
+                use fuzzy_matcher::FuzzyMatcher;
+                use fuzzy_matcher::skim::SkimMatcherV2;
+                let matcher = SkimMatcherV2::default();
+                app.palette_commands
+                    .iter()
+                    .filter(|cmd| matcher.fuzzy_match(&cmd.name, &query).is_some())
+                    .collect()
+            };
+
+            let selected_idx = app
+                .command_palette_selected
+                .min(filtered.len().saturating_sub(1));
+            let command_name = filtered.get(selected_idx).map(|cmd| cmd.name.clone());
+
             app.close_command_palette();
+
+            if let Some(name) = command_name {
+                execute_palette_command(app, &name)?;
+            }
         }
         KeyCode::Up => {
             app.command_palette_selected = app.command_palette_selected.saturating_sub(1);
         }
         KeyCode::Down => {
-            app.command_palette_selected = app.command_palette_selected.saturating_add(1);
+            // Clamp to filtered list length
+            let query = &app.command_palette_input;
+            let filtered_len = if query.is_empty() {
+                app.palette_commands.len()
+            } else {
+                use fuzzy_matcher::FuzzyMatcher;
+                use fuzzy_matcher::skim::SkimMatcherV2;
+                let matcher = SkimMatcherV2::default();
+                app.palette_commands
+                    .iter()
+                    .filter(|cmd| matcher.fuzzy_match(&cmd.name, query).is_some())
+                    .count()
+            };
+            app.command_palette_selected =
+                (app.command_palette_selected + 1).min(filtered_len.saturating_sub(1));
         }
         KeyCode::Backspace => {
             app.command_palette_input.pop();
@@ -272,6 +386,63 @@ fn handle_command_palette_mode(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
 
+    Ok(())
+}
+
+/// Execute a command palette command by name.
+fn execute_palette_command(app: &mut App, name: &str) -> Result<()> {
+    match name {
+        "Stage File" => {
+            app.stage_selected()?;
+        }
+        "Unstage File" => {
+            app.unstage_selected()?;
+        }
+        "Commit" => {
+            app.do_commit()?;
+        }
+        "Amend Commit" => {
+            app.toggle_amend();
+        }
+        "Discard Changes" => {
+            app.discard_selected()?;
+        }
+        "Fetch" => {
+            app.async_status = Some("Fetching...".to_string());
+            app.notify("Fetch initiated".to_string(), NotificationType::Info);
+        }
+        "Push" => {
+            app.async_status = Some("Pushing...".to_string());
+            app.notify("Push initiated".to_string(), NotificationType::Info);
+        }
+        "Pull" => {
+            app.async_status = Some("Pulling...".to_string());
+            app.notify("Pull initiated".to_string(), NotificationType::Info);
+        }
+        "Create Branch" => {
+            app.create_branch()?;
+        }
+        "Stash Save" => {
+            app.stash_save()?;
+        }
+        "Stash Pop" => {
+            app.stash_pop()?;
+        }
+        "Refresh" => {
+            app.refresh()?;
+            app.notify("Refreshed".to_string(), NotificationType::Info);
+        }
+        "Toggle Diff Mode" => {
+            app.toggle_diff_mode();
+        }
+        "Help" => {
+            app.toggle_help();
+        }
+        "Quit" => {
+            app.should_quit = true;
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -345,16 +516,58 @@ fn handle_dialog_mode(app: &mut App, key: KeyEvent) -> Result<()> {
 fn handle_search_mode(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc => {
+            app.search_query.clear();
+            app.search_results.clear();
             app.input_mode = InputMode::Normal;
         }
         KeyCode::Enter => {
-            // TODO: perform the search with the accumulated query
+            // Keep results and exit search mode
             app.input_mode = InputMode::Normal;
         }
-        _ => {
-            // Search mode is a placeholder; we simply exit on escape/enter.
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.search_next();
         }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.search_prev();
+        }
+        KeyCode::Backspace => {
+            app.search_query.pop();
+            app.perform_search();
+        }
+        KeyCode::Char(c) => {
+            app.search_query.push(c);
+            app.perform_search();
+        }
+        _ => {}
     }
+    Ok(())
+}
 
+// ---------------------------------------------------------------------------
+// Context menu mode
+// ---------------------------------------------------------------------------
+
+fn handle_context_menu_mode(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            app.context_menu = None;
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => {
+            app.execute_context_menu_action()?;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(ref mut menu) = app.context_menu {
+                menu.selected = menu.selected.saturating_sub(1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(ref mut menu) = app.context_menu {
+                let max = menu.items.len().saturating_sub(1);
+                menu.selected = (menu.selected + 1).min(max);
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
