@@ -58,7 +58,7 @@ brew install gittui
 ### npm
 
 ```bash
-npm install -g gittui
+npm install -g @maplefukku/gittui
 ```
 
 ### Cargo (crates.io)
