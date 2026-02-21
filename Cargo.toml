@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 ratatui = { version = "0.28", features = ["all-widgets"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
-git2 = "0.19"
+git2 = { version = "0.19", features = ["vendored-openssl"] }
 tokio = { version = "1", features = ["full"] }
 syntect = "5"
 unicode-width = "0.2"
